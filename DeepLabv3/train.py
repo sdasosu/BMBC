@@ -3,7 +3,10 @@ import xml.etree.ElementTree as ET
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from torchvision.models.segmentation import deeplabv3_mobilenet_v3_large
+from torchvision.models.segmentation import (
+    deeplabv3_mobilenet_v3_large,
+    DeepLabV3_MobileNet_V3_Large_Weights,
+)
 from PIL import Image
 import torchvision.transforms as transforms
 import numpy as np
@@ -141,14 +144,22 @@ class SegmentationDataset(Dataset):
 
 
 def train_model(
-    model, train_loader, val_loader, criterion, optimizer, num_epochs, device
+    model, train_loader, val_loader, criterion, optimizer, num_epochs, device, seed
 ):
+    # Set random seeds for reproducibility
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(seed)
+
     best_val_loss = float("inf")  # Initialize best validation loss to positive infinity
     best_model_path = "best_model.pth"  # Best model save path
 
     for epoch in range(num_epochs):
         print(f"\nEpoch {epoch+1}/{num_epochs}")
         print("-" * 50)
+        print(f"Current device: {device}")
 
         # Training phase
         model.train()
@@ -232,11 +243,13 @@ def main():
     train_dataset = SegmentationDataset("data", split="train")
     val_dataset = SegmentationDataset("data", split="valid")
 
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, drop_last=True)
 
     # Create model
-    model = deeplabv3_mobilenet_v3_large(pretrained=True)
+    model = deeplabv3_mobilenet_v3_large(
+        weights=DeepLabV3_MobileNet_V3_Large_Weights.DEFAULT
+    )
     # Modify output layer to 5 classes (background + 4 target classes)
     model.classifier[-1] = nn.Conv2d(256, 5, kernel_size=(1, 1), stride=(1, 1))
     model = model.to(device)
@@ -254,6 +267,7 @@ def main():
         optimizer,
         num_epochs=50,
         device=device,
+        seed=42,
     )
 
 
