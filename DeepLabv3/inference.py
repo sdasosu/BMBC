@@ -120,7 +120,7 @@ def main():
     
     # Load test dataset
     try:
-        test_dataset = SegmentationDataset('data', split='test')
+        test_dataset = SegmentationDataset('../data', split='test')
         test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, 
                                num_workers=4 if device.type != 'mps' else 0)
         print(f"Loaded {len(test_dataset)} test images")

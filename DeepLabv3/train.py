@@ -13,6 +13,7 @@ import logging
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+os.makedirs("models", exist_ok=True)
 
 # Add class mapping
 CLASS_MAPPING = {
@@ -218,8 +219,8 @@ def main():
                          'cuda' if torch.cuda.is_available() else 'cpu')
     
     # Create dataset and data loader
-    train_dataset = SegmentationDataset('data', split='train')
-    val_dataset = SegmentationDataset('data', split='valid')
+    train_dataset = SegmentationDataset('../data', split='train')
+    val_dataset = SegmentationDataset('../data', split='valid')
     
     train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, drop_last=True)
@@ -235,7 +236,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     
     # Train model
-    train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=2, device=device, seed=42)
+    train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=100, device=device, seed=42)
 
 if __name__ == '__main__':
     main()
