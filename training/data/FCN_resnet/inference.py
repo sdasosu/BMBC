@@ -6,7 +6,10 @@ from train import SegmentationDataset, CLASS_MAPPING
 from torch.utils.data import DataLoader
 import numpy as np
 from PIL import Image
+import matplotlib
+matplotlib.use("Agg")  # or "pdf", "svg", etc.
 import matplotlib.pyplot as plt
+import os
 import os
 from tqdm import tqdm
 import glob
@@ -113,16 +116,28 @@ def evaluate_model(model, test_loader, device, save_dir="results", max_vis_image
 
             pbar.update(1)
 
-    # Calculate mean IoU
-    mean_iou_per_class = total_iou / num_images
-
-    # Calculate accuracy for each class
+    # -----------------------------------------------------------
+    # Compute per-class IoU from the final confusion matrix
+    # IoU(c) = conf_mat[c, c] / (sum(conf_mat[c, :]) + sum(conf_mat[:, c]) - conf_mat[c, c])
+    # -----------------------------------------------------------
+    per_class_iou = []
+    for c in range(num_classes):
+        intersection = confusion_matrix[c, c]
+        gt = confusion_matrix[c, :].sum()
+        pred = confusion_matrix[:, c].sum()
+        union = gt + pred - intersection
+        iou = intersection / (union + 1e-10)
+        per_class_iou.append(iou.item())
+    
+    # Convert to numpy array for convenience
+    mean_iou_per_class = np.array(per_class_iou)
+    
+    # Compute per-class accuracy: diag / row_sum
     per_class_acc = confusion_matrix.diag() / (confusion_matrix.sum(dim=1) + 1e-10)
     per_class_acc = per_class_acc.cpu().numpy()
-
+    
     return mean_iou_per_class, per_class_acc
-
-
+#-----------------------------------------------------------------
 def main():
     # Set device
     device = torch.device(
@@ -149,10 +164,8 @@ def main():
     # Initialize model
     try:
         model = fcn_resnet50(pretrained=True)
-        model.classifier[-1] = nn.Conv2d(
-            512, len(CLASS_MAPPING) + 1, kernel_size=(1, 1), stride=(1, 1)
-        )
-        model.to(device)
+        model.classifier[-1] = nn.Conv2d(512, len(CLASS_MAPPING) + 1, kernel_size=(1, 1), stride=(1, 1))
+        model=model.to(device)
         print("Model initialized successfully")
     except Exception as e:
         print(f"Error initializing model: {str(e)}")
@@ -203,7 +216,10 @@ def main():
             print(f"Error evaluating epoch {epoch_num}: {str(e)}")
             continue
 
+    # -----------------------------------------------------------
     # Save results to CSV
+    # -----------------------------------------------------------
+    
     df = pd.DataFrame(results)
     df.to_csv("evaluation_results.csv", index=False)
     print("\nResults saved to evaluation_results.csv")

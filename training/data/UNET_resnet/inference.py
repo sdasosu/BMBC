@@ -1,17 +1,20 @@
 import torch
 import torch.nn as nn
 from torchvision.models.segmentation import deeplabv3_mobilenet_v3_large
-from UNetTrain import SegmentationDataset, CLASS_MAPPING
+from torchvision.models.segmentation import fcn_resnet50, FCN_ResNet50_Weights
+from train import SegmentationDataset, CLASS_MAPPING
 from torch.utils.data import DataLoader
 import numpy as np
 from PIL import Image
+import matplotlib
+matplotlib.use("Agg")  # or "pdf", "svg", etc.
 import matplotlib.pyplot as plt
+import os
 import os
 from tqdm import tqdm
 import glob
 import pandas as pd
-from UNetTrain import *
-
+import segmentation_models_pytorch as smp
 
 # Define class to color mapping
 COLOR_MAP = {
@@ -33,7 +36,9 @@ def mask_to_color(mask):
 
 def evaluate_model(model, test_loader, device, save_dir="results", max_vis_images=10):
     model.eval()
-    num_classes = len(CLASS_MAPPING) + 1  # Add 1 because there's also a background class
+    num_classes = (
+        len(CLASS_MAPPING) + 1
+    )  # Add 1 because there's also a background class
     total_iou = np.zeros(num_classes)
     num_images = 0
     vis_count = 0
@@ -49,7 +54,7 @@ def evaluate_model(model, test_loader, device, save_dir="results", max_vis_image
             images = images.to(device)
             masks = masks.to(device)
 
-            outputs = model(images)  # Use the model output directly
+            outputs = model(images)
             predictions = torch.argmax(outputs, dim=1)
 
             # Update confusion matrix
@@ -112,16 +117,28 @@ def evaluate_model(model, test_loader, device, save_dir="results", max_vis_image
 
             pbar.update(1)
 
-    # Calculate mean IoU
-    mean_iou_per_class = total_iou / num_images
-
-    # Calculate accuracy for each class
+    # -----------------------------------------------------------
+    # Compute per-class IoU from the final confusion matrix
+    # IoU(c) = conf_mat[c, c] / (sum(conf_mat[c, :]) + sum(conf_mat[:, c]) - conf_mat[c, c])
+    # -----------------------------------------------------------
+    per_class_iou = []
+    for c in range(num_classes):
+        intersection = confusion_matrix[c, c]
+        gt = confusion_matrix[c, :].sum()
+        pred = confusion_matrix[:, c].sum()
+        union = gt + pred - intersection
+        iou = intersection / (union + 1e-10)
+        per_class_iou.append(iou.item())
+    
+    # Convert to numpy array for convenience
+    mean_iou_per_class = np.array(per_class_iou)
+    
+    # Compute per-class accuracy: diag / row_sum
     per_class_acc = confusion_matrix.diag() / (confusion_matrix.sum(dim=1) + 1e-10)
     per_class_acc = per_class_acc.cpu().numpy()
-
+    
     return mean_iou_per_class, per_class_acc
-
-
+#-----------------------------------------------------------------
 def main():
     # Set device
     device = torch.device(
@@ -136,7 +153,7 @@ def main():
         test_dataset = SegmentationDataset("../data", split="test")
         test_loader = DataLoader(
             test_dataset,
-            batch_size=8,
+            batch_size=4,
             shuffle=False,
             num_workers=4 if device.type != "mps" else 0,
         )
@@ -147,7 +164,14 @@ def main():
 
     # Initialize model
     try:
-        model = UNet(num_classes=5)  # First create model instance
+        model = smp.Unet(
+            encoder_name="resnet34",  # Change to any supported encoder
+            encoder_weights="imagenet",  # Pretrained weights
+            in_channels=3,  # Number of input image channels
+            classes=5,  # Number of segmentation classes
+        )
+        model=model.to(device)
+
         print("Model initialized successfully")
     except Exception as e:
         print(f"Error initializing model: {str(e)}")
@@ -155,8 +179,7 @@ def main():
 
     # Find all model checkpoints
     checkpoint_files = sorted(
-        glob.glob("models/model_epoch_*.pth"), 
-        key=lambda x: int(x.split("_")[2].split(".")[0])
+        glob.glob("models/model_epoch_*.pth"), key=lambda x: int(x.split("_")[2].split(".")[0])
     )
 
     if not checkpoint_files:
@@ -172,10 +195,8 @@ def main():
         print(f"\nEvaluating model from epoch {epoch_num}")
 
         try:
-            # Load model weights using weights_only=True
-            model.load_state_dict(torch.load(checkpoint_file, map_location=device, weights_only=True))
-            model.to(device)
-            model.eval()
+            # Load model weights
+            model.load_state_dict(torch.load(checkpoint_file, map_location=device))
 
             # Evaluate model
             mean_iou_per_class, per_class_acc = evaluate_model(
@@ -201,7 +222,10 @@ def main():
             print(f"Error evaluating epoch {epoch_num}: {str(e)}")
             continue
 
+    # -----------------------------------------------------------
     # Save results to CSV
+    # -----------------------------------------------------------
+    
     df = pd.DataFrame(results)
     df.to_csv("evaluation_results.csv", index=False)
     print("\nResults saved to evaluation_results.csv")

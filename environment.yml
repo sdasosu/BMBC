@@ -118,4 +118,3 @@ dependencies:
     - tqdm==4.67.1
     - tzdata==2024.2
     - zipp==3.20.2
-prefix: /home/windfade/.conda/envs/img-seg
