@@ -34,14 +34,14 @@ CLASS_MAPPING = {
 
 
 #------------------ Training /Finetuning Parameters -----------------
-device = torch.device('mps' if torch.backends.mps.is_available() else 
+device = torch.device('mps' if torch.backends.mps.is_available() else
                          'cuda' if torch.cuda.is_available() else 'cpu')
 
 
 # Create dataset and data loader
-train_dataset = SegmentationDataset('../data', split='train')
-test_dataset= SegmentationDataset('../data', split='test')
-val_dataset = SegmentationDataset('../data', split='valid')
+train_dataset = SegmentationDataset('../../training/data', split='train')
+test_dataset= SegmentationDataset('../../training/data', split='test')
+val_dataset = SegmentationDataset('../../training/data', split='valid')
 
 train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, drop_last=True)
 test_loader  = DataLoader(test_dataset, batch_size= 4, shuffle=False, drop_last=True)
@@ -51,7 +51,7 @@ val_loader   = DataLoader(val_dataset , batch_size=4, shuffle=False, drop_last=T
 
 
 #---------------------------------------------------------------
-# Bring the Model --> Prune it return it 
+# Bring the Model --> Prune it return it
 #---------------------------------------------------------------
 model = deeplabv3_resnet50(weights=None)  # No pre-trained weights
 model.classifier[-1] = nn.Conv2d(256, len(CLASS_MAPPING) + 1, kernel_size=(1, 1), stride=(1, 1))
