@@ -216,3 +216,6 @@ cython_debug/
 
 # Slurm shell scripts
 *.sh
+
+# Deep Learnig
+*.pth
