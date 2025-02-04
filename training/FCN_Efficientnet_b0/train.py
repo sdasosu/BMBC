@@ -1,4 +1,4 @@
-#pip install segmentation-models-pytorch
+# pip install segmentation-models-pytorch
 import os
 import xml.etree.ElementTree as ET
 import torch
@@ -149,7 +149,15 @@ class SegmentationDataset(Dataset):
 
 
 def train_model(
-    model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs, device, seed
+    model,
+    train_loader,
+    val_loader,
+    criterion,
+    optimizer,
+    scheduler,
+    num_epochs,
+    device,
+    seed,
 ):
     # Set random seeds for reproducibility
     torch.manual_seed(seed)
@@ -224,8 +232,6 @@ def train_model(
         print(f"  Training Loss: {epoch_train_loss:.4f}")
         print(f"  Validation Loss: {epoch_val_loss:.4f}")
 
-        
-
         # Save the model for the current epoch
         epoch_model_path = f"models/model_epoch_{epoch+1}.pth"
         torch.save(model.state_dict(), epoch_model_path)
@@ -237,10 +243,11 @@ def train_model(
             torch.save(model.state_dict(), best_model_path)
             print(f"Best model saved to {best_model_path}")
 
-
         scheduler.step(epoch_val_loss)
 
-#------------------------------------------------
+
+# ------------------------------------------------
+
 
 def main():
     # Create models directory if it doesn't exist
@@ -261,21 +268,31 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False, drop_last=True)
 
     # Create model
-    model = smp.FPN("efficientnet-b0", encoder_weights="imagenet", classes=5, activation=None)
+    model = smp.FPN(
+        "efficientnet-b0", encoder_weights="imagenet", classes=5, activation=None
+    )
     model.segmentation_head = nn.Sequential(
-    nn.Conv2d(128, 5, kernel_size=1, stride=1),  # EfficientNet-B0 outputs 128 feature maps
-    nn.Upsample(scale_factor=4, mode="bilinear", align_corners=True)  # Adjust resolution
-)
+        nn.Conv2d(
+            128, 5, kernel_size=1, stride=1
+        ),  # EfficientNet-B0 outputs 128 feature maps
+        nn.Upsample(
+            scale_factor=4, mode="bilinear", align_corners=True
+        ),  # Adjust resolution
+    )
     model = model.to(device)
 
     # Define loss function and optimizer
-    class_weights = torch.tensor([0.5, 1.0, 1.1, 1.5, 2.0], dtype=torch.float).to(device)
+    class_weights = torch.tensor([0.5, 1.0, 1.1, 1.5, 2.0], dtype=torch.float).to(
+        device
+    )
 
-# Define weighted loss
+    # Define weighted loss
     criterion = nn.CrossEntropyLoss(weight=class_weights)
-    #criterion = nn.CrossEntropyLoss()
+    # criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.6, patience=5, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.6, patience=5, verbose=True
+    )
 
     # Train model
     train_model(

@@ -1,4 +1,4 @@
-#pip install segmentation-models-pytorch
+# pip install segmentation-models-pytorch
 import os
 import xml.etree.ElementTree as ET
 import torch
@@ -149,7 +149,15 @@ class SegmentationDataset(Dataset):
 
 
 def train_model(
-    model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs, device, seed
+    model,
+    train_loader,
+    val_loader,
+    criterion,
+    optimizer,
+    scheduler,
+    num_epochs,
+    device,
+    seed,
 ):
     # Set random seeds for reproducibility
     torch.manual_seed(seed)
@@ -224,8 +232,6 @@ def train_model(
         print(f"  Training Loss: {epoch_train_loss:.4f}")
         print(f"  Validation Loss: {epoch_val_loss:.4f}")
 
-        
-
         # Save the model for the current epoch
         epoch_model_path = f"models/model_epoch_{epoch+1}.pth"
         torch.save(model.state_dict(), epoch_model_path)
@@ -237,10 +243,11 @@ def train_model(
             torch.save(model.state_dict(), best_model_path)
             print(f"Best model saved to {best_model_path}")
 
-
         scheduler.step(epoch_val_loss)
 
-#------------------------------------------------
+
+# ------------------------------------------------
+
 
 def main():
     # Create models directory if it doesn't exist
@@ -260,12 +267,11 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False, drop_last=True)
 
-
-    #------------------------------------- Model -----------------------------------
-        # Define the model with MobileNetV3-Small as the encoder
-   # Define the model with MobileNetV3-Small as the encoder
+    # ------------------------------------- Model -----------------------------------
+    # Define the model with MobileNetV3-Small as the encoder
+    # Define the model with MobileNetV3-Small as the encoder
     model = smp.Unet(
-        encoder_name="timm-mobilenetv3_small_100", 
+        encoder_name="timm-mobilenetv3_small_100",
         encoder_weights="imagenet",
         in_channels=3,
         classes=5,
@@ -273,17 +279,20 @@ def main():
 
     model = model.to(device)
 
-    #-------------------------------------------------------------------------------
-
+    # -------------------------------------------------------------------------------
 
     # Define loss function and optimizer
-    class_weights = torch.tensor([0.5, 1.0, 1.1, 1.5, 2.0], dtype=torch.float).to(device)
+    class_weights = torch.tensor([0.5, 1.0, 1.1, 1.5, 2.0], dtype=torch.float).to(
+        device
+    )
 
-# Define weighted loss
+    # Define weighted loss
     criterion = nn.CrossEntropyLoss(weight=class_weights)
-    #criterion = nn.CrossEntropyLoss()
+    # criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.6, patience=5, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.6, patience=5, verbose=True
+    )
 
     # Train model
     train_model(
