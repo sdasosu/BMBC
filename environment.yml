@@ -1,4 +1,4 @@
-name: img-seg
+name: BMBC
 channels:
   - pytorch
   - nvidia
