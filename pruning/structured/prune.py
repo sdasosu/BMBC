@@ -64,7 +64,7 @@ class SegmentationDatasetConfig:
     @staticmethod
     def get_transform_for_model(model_type: str):
         # Choose input size based on model requirements
-        if model_type in ["FCN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
+        if model_type in ["FPN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
             # These models require dimensions divisible by 32
             resize_size = (512, 512)
         else:
@@ -177,7 +177,7 @@ class SegmentationDataset(Dataset):
             image = self.transform(image)
             # Resize mask to match the model-specific input size
             if self.model_type in [
-                "FCN_EfficientNet",
+                "FPN_EfficientNet",
                 "UNET_MobileNetV3",
                 "UNET_ResNet",
             ]:
@@ -198,8 +198,8 @@ class ModelHandler:
     def get_model_type_from_path(checkpoint_path: str) -> str:
         """Determine model type from checkpoint filename"""
         base_name = os.path.basename(checkpoint_path)
-        if "FCN_EfficientNet" in base_name:
-            return "FCN_EfficientNet"
+        if "FPN_EfficientNet" in base_name:
+            return "FPN_EfficientNet"
         elif "FCN_resnet" in base_name:
             return "FCN_ResNet"
         elif "UNET_mobilenet" in base_name:
@@ -231,8 +231,8 @@ class ModelHandler:
                 weights=DeepLabV3_MobileNet_V3_Large_Weights.DEFAULT
             )
             model.classifier[-1] = nn.Conv2d(256, num_classes, kernel_size=1)
-        elif model_type == "FCN_EfficientNet":
-            # Initialize FCN with EfficientNet-B0 backbone
+        elif model_type == "FPN_EfficientNet":
+            # Initialize FPN with EfficientNet-B0 backbone
             model = smp.FPN(
                 "efficientnet-b0",
                 encoder_weights="imagenet",
@@ -282,7 +282,7 @@ class ModelHandler:
         """Get output layer for different model types to ignore during pruning"""
         if model_type in ["DeepLabV3_ResNet", "DeepLabV3_MobileNet", "FCN_ResNet"]:
             return [model.classifier[-1]]  # Output layer for DeepLabV3 models
-        elif model_type == "FCN_EfficientNet":
+        elif model_type == "FPN_EfficientNet":
             return [
                 model.segmentation_head[0]
             ]  # First layer in the segmentation head for FPN
@@ -306,7 +306,7 @@ class ModelHandler:
 
         # Adjust example input size based on model type
         example_input_size = list(config.example_input_size)
-        if model_type in ["FCN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
+        if model_type in ["FPN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
             # Use 512x512 for models requiring input size divisible by 32
             example_input_size[2] = 512
             example_input_size[3] = 512
@@ -381,7 +381,7 @@ class Trainer:
 
         best_val_loss = float("inf")
         early_stop_counter = 0
-        best_model = None  # Store the entire model for FCN_EfficientNet
+        best_model = None  # Store the entire model for FPN_EfficientNet
         best_state_dict = None  # Store state dict for other models
 
         # Create temporary directory for saving models during training
@@ -399,7 +399,7 @@ class Trainer:
                 best_val_loss = val_loss
                 # Handle different model types
                 if self.model_type in [
-                    "FCN_EfficientNet",
+                    "FPN_EfficientNet",
                     "UNET_MobileNetV3",
                     "UNET_ResNet",
                 ]:
@@ -431,7 +431,7 @@ class Trainer:
 
         # Restore best model
         if (
-            self.model_type in ["FCN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]
+            self.model_type in ["FPN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]
             or best_model is not None
         ):
             # Use the saved best model directly if we have it in memory
@@ -488,7 +488,7 @@ class Trainer:
                 "FCN_ResNet",
             ]:
                 outputs = model(images)["out"]
-            else:  # FCN_EfficientNet, UNET_MobileNetV3 and other models
+            else:  # FPN_EfficientNet, UNET_MobileNetV3 and other models
                 outputs = model(images)
 
             loss = criterion(outputs, masks)
@@ -519,7 +519,7 @@ class Trainer:
                     "FCN_ResNet",
                 ]:
                     outputs = model(images)["out"]
-                else:  # FCN_EfficientNet, UNET_MobileNetV3 and other models
+                else:  # FPN_EfficientNet, UNET_MobileNetV3 and other models
                     outputs = model(images)
 
                 loss = criterion(outputs, masks)
@@ -555,7 +555,7 @@ def prune_model(config: PruningConfig) -> nn.Module:
 
         # Adjust example input size based on model type
         example_input_size = list(config.example_input_size)
-        if model_type in ["FCN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
+        if model_type in ["FPN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
             # Use 512x512 for models requiring input size divisible by 32
             example_input_size[2] = 512
             example_input_size[3] = 512
@@ -565,11 +565,11 @@ def prune_model(config: PruningConfig) -> nn.Module:
         )
         print(f"Round {i + 1}/{config.iterative_steps}, Params: {nparams / 1e6:.2f} M")
 
-        # Fine-tune with special handling for FCN_EfficientNet
+        # Fine-tune with special handling for FPN_EfficientNet
         model = trainer.fine_tune(model, config.fine_tune_epochs)
 
         # Save intermediate model
-        if model_type in ["FCN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
+        if model_type in ["FPN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
             # For models not compatible with tp.state_dict, save the full model
             intermediate_path = os.path.join(
                 intermediate_model_dir,
@@ -596,7 +596,7 @@ def prune_model(config: PruningConfig) -> nn.Module:
     model.cpu()
 
     # Save differently based on model type
-    if model_type in ["FCN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
+    if model_type in ["FPN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
         # For models not compatible with tp.state_dict, save full model
         model_path = config.output_path.replace(".pth", ".model.pth")
         torch.save(model, model_path)

@@ -123,8 +123,8 @@ class ModelEvaluator:
         """Initialize test data loader"""
         # Get all pruned models to check if we have special model types
         pruned_models = self._get_sorted_pruned_models()
-        has_fcn_efficientnet = any(
-            "FCN_EfficientNet" in model[0] for model in pruned_models
+        has_fpn_efficientnet = any(
+            "FPN_EfficientNet" in model[0] for model in pruned_models
         )
         has_fcn_resnet = any("FCN_resnet" in model[0] for model in pruned_models)
         has_unet_mobilenet = any(
@@ -134,8 +134,8 @@ class ModelEvaluator:
 
         # Choose model type for dataset based on which models we have
         model_type = ""
-        if has_fcn_efficientnet:
-            model_type = "FCN_EfficientNet"
+        if has_fpn_efficientnet:
+            model_type = "FPN_EfficientNet"
         elif has_fcn_resnet:
             model_type = "FCN_ResNet"
         elif has_unet_mobilenet:
@@ -169,8 +169,8 @@ class ModelEvaluator:
             return "UNET_MobileNetV3"
         elif "unet_resnet" in model_file_lower:
             return "UNET_ResNet"
-        elif "fcn_efficientnet" in model_file_lower:
-            return "FCN_EfficientNet"
+        elif "fpn_efficientnet" in model_file_lower:
+            return "FPN_EfficientNet"
         elif "fcn_resnet" in model_file_lower:
             return "FCN_ResNet"
         elif "deeplabv3_mobilenet" in model_file_lower:
@@ -189,8 +189,8 @@ class ModelEvaluator:
         elif model_type == "DeepLabV3_MobileNet":
             model = deeplabv3_mobilenet_v3_large(weights=None)
             model.classifier[-1] = nn.Conv2d(256, num_classes, kernel_size=1)
-        elif model_type == "FCN_EfficientNet":
-            # Initialize FCN with EfficientNet-B0 backbone
+        elif model_type == "FPN_EfficientNet":
+            # Initialize FPN with EfficientNet-B0 backbone
             model = smp.FPN(
                 "efficientnet-b0",
                 encoder_weights=None,  # We're loading weights later
@@ -262,7 +262,7 @@ class ModelEvaluator:
                         "FCN_ResNet",
                     ]:
                         predictions = torch.argmax(outputs["out"], dim=1)
-                    else:  # FCN_EfficientNet, UNET_MobileNetV3, UNET_ResNet
+                    else:  # FPN_EfficientNet, UNET_MobileNetV3, UNET_ResNet
                         predictions = torch.argmax(outputs, dim=1)
 
                     # Update confusion matrix
@@ -693,7 +693,7 @@ class ModelEvaluator:
     def _get_transform_for_model_type(self, model_type: str):
         """Get appropriate transform based on model type"""
         # Choose input size based on model requirements
-        if model_type in ["FCN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
+        if model_type in ["FPN_EfficientNet", "UNET_MobileNetV3", "UNET_ResNet"]:
             # These models require dimensions divisible by 32
             resize_size = (512, 512)
         else:
