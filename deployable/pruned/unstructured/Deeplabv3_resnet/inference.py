@@ -1,20 +1,15 @@
-import time
+import json
 import os
-import warnings
-from PIL import Image
+import time
+from datetime import datetime
+
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
-import segmentation_models_pytorch as smp
-from datetime import datetime
-import json
+from PIL import Image
+from torchvision.models.segmentation import deeplabv3_resnet50
 
-# Suppress TracerWarning from torch.jit from segmentation_models_pytorch
-from torch.jit import TracerWarning
-
-warnings.filterwarnings("ignore", category=TracerWarning)
-
-# ----------------- Setting up the device --------------
+# ----------------- Setting up the device--------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ----------------- Create necessary directories if they don't exist --------------
@@ -22,7 +17,9 @@ os.makedirs("results", exist_ok=True)
 os.makedirs(os.path.join("results", "detected_images"), exist_ok=True)
 # -------------------------------------------------------------------------------
 
+
 # ----------------- Class Mapping ---------------------
+
 CLASS_MAPPING = {
     "adult": 1,
     "egg masses": 2,
@@ -31,55 +28,32 @@ CLASS_MAPPING = {
 }
 # ---------------------------------------------------
 
+
 # ---------------- Read the class labels from a JSON file ---------------
-with open("../data/label.json", "r") as f:
+with open("../../../data/label.json", "r") as f:
     class_labels_dict = json.load(f)
+
 # Sorted keys numerically to ensure the correct order
 class_labels = [
     class_labels_dict[key] for key in sorted(class_labels_dict, key=lambda x: int(x))
 ]
 # ------------------------------------------------------------------------
 
+
 # -------------------- Model ---------------------------
-# Build the FPN model with EfficientNet-B0 encoder (acting as FCN)
-model = smp.FPN(
-    encoder_name="efficientnet-b0",
-    encoder_weights="imagenet",
-    classes=5,  # 4 target classes + background
-    activation=None,
-)
-# Redefine the segmentation head to align with EfficientNet-B0 output channels
-model.segmentation_head = nn.Sequential(
-    nn.Conv2d(
-        128, 5, kernel_size=1, stride=1
-    ),  # EfficientNet-B0 outputs 128 feature maps
-    nn.Upsample(
-        scale_factor=4, mode="bilinear", align_corners=True
-    ),  # Adjust resolution
+model = deeplabv3_resnet50(weights=None)
+model.classifier[-1] = nn.Conv2d(
+    256, len(CLASS_MAPPING) + 1, kernel_size=(1, 1), stride=(1, 1)
 )
 model = model.to(device)
 # -------------------- Check point --------------------
-checkpoint_path = "../models/FCN_EfficientNet_b0_epoch_36.pth"
-# Use weights_only=True to limit arbitrary code execution during unpickling
+checkpoint_path = (
+    "../../../models/pruned_models/unstructured/Deeplabv3_resnet_epoch_9.pth"
+)
 checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 model.load_state_dict(checkpoint, strict=False)
-model.eval()  # Set model to evaluation mode
-# ----------------------------------------------------------------------------
-
-
-# Wrap the model so that only the output tensor is returned (instead of a dictionary)
-class FPNWrapper(nn.Module):
-    def __init__(self, model):
-        super(FPNWrapper, self).__init__()
-        self.model = model
-
-    def forward(self, x):
-        outputs = self.model(x)
-        if isinstance(outputs, dict):
-            return outputs["out"]
-        else:
-            return outputs
-
+model.eval()  # Set model to evaluation mode to avoid BatchNorm errors during tracing
+net = torch.jit.script(model)
 
 # Define preprocessing transformations for tracing and inference
 preprocess = transforms.Compose(
@@ -91,28 +65,26 @@ preprocess = transforms.Compose(
     ]
 )
 
+# -----------------------------------------------------
 # Use captured.jpg as sample input for tracing instead of a random tensor
 try:
-    sample_image = Image.open("../data/captured.jpg").convert("RGB")
+    sample_image = Image.open("../../../data/captured.jpg").convert("RGB")
 except Exception as e:
     raise FileNotFoundError("captured.jpg not found for tracing.") from e
 tracing_input = preprocess(sample_image).unsqueeze(0).to(device)
-
-# Trace the wrapped model instead
-wrapped_model = FPNWrapper(model)
-net = torch.jit.trace(wrapped_model, tracing_input, strict=False)
+net = torch.jit.trace(model, tracing_input, strict=False)
 # -----------------------------------------------------
 
 net.eval()
 
 
-def capture_image(image_path="../data/captured.jpg"):
+def capture_image(image_path="../../../data/captured.jpg"):
     # Captures an image using libcamera-still, the command automatically handles opening and closing the camera
     # os.system(f'libcamera-still -o {image_path}')
     return image_path
 
 
-# Decorator to measure inference time based on CPU and wall-clock time
+# Decorator to measure inference time based on CPU time and wall-clock time
 def measure_inference_time(func):
     def wrapper(*args, **kwargs):
         start_cpu_time = time.process_time()  # Start CPU time measurement
@@ -126,7 +98,7 @@ def measure_inference_time(func):
         cpu_inference_time = end_cpu_time - start_cpu_time
         wall_inference_time = end_wall_time - start_wall_time
 
-        # Get CPU temperature if available
+        # Get CPU temperature
         temp = get_cpu_temperature()
 
         # Create a log entry with timestamp, CPU time, wall time, and temperature information
@@ -147,7 +119,7 @@ def measure_inference_time(func):
     return wrapper
 
 
-# Updated process_image function with the inference time decorator
+# Updated process_image function with the inference time measurement decorator
 @measure_inference_time
 def process_image(image_path):
     # Load and preprocess the image
@@ -159,10 +131,9 @@ def process_image(image_path):
 
     # Perform inference
     with torch.no_grad():
-        # The traced model now returns the output tensor directly.
-        output_tensor = net(input_batch)
+        outputs = net(input_batch)
+        output_tensor = outputs["out"]
         probabilities = torch.nn.functional.softmax(output_tensor, dim=1)
-        # For segmentation, compute the pixel-wise prediction and take the mode as final class
         predicted_classes = torch.argmax(probabilities, dim=1)
         predicted_class = predicted_classes.flatten().mode()[0].item()
 
@@ -217,8 +188,8 @@ def main_loop():
     try:
         while True:
             capture_image()  # Capture an image
-            process_image("../data/captured.jpg")  # Process the captured image
-            # time.sleep(30)  # Wait for 30 seconds before the next capture
+            process_image("../../../data/captured.jpg")  # Process the captured image
+            # time.sleep(30)  # Wait for 30 seconds before next capture
     except KeyboardInterrupt:
         print("Stopped by User")
     except Exception as e:

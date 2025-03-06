@@ -1,13 +1,13 @@
-import time
-import os
-import warnings
-from PIL import Image
-import torch
-import torch.nn as nn
-import torchvision.transforms as transforms
-from datetime import datetime
 import json
+import os
+import time
+import warnings
+from datetime import datetime
+
 import segmentation_models_pytorch as smp
+import torch
+import torchvision.transforms as transforms
+from PIL import Image
 
 # Suppress TracerWarning from torch.jit if any warnings occur
 from torch.jit import TracerWarning
@@ -32,7 +32,7 @@ CLASS_MAPPING = {
 # ---------------------------------------------------
 
 # ---------------- Read the class labels from a JSON file ---------------
-with open("../data/label.json", "r") as f:
+with open("../../../data/label.json", "r") as f:
     class_labels_dict = json.load(f)
 # Sorted keys numerically to ensure the correct order
 class_labels = [
@@ -52,7 +52,9 @@ model = smp.Unet(
 model = model.to(device)
 
 # -------------------- Check point --------------------
-checkpoint_path = "../models/UNET_mobilenet_epoch_37.pth"
+checkpoint_path = (
+    "../../../models/pruned_models/unstructured/UNET_mobilenet_epoch_36.pth"
+)
 checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 model.load_state_dict(checkpoint, strict=False)
 model.eval()  # Set model to evaluation mode
@@ -70,7 +72,7 @@ preprocess = transforms.Compose(
 
 # Use captured.jpg as sample input for tracing instead of a random tensor
 try:
-    sample_image = Image.open("../data/captured.jpg").convert("RGB")
+    sample_image = Image.open("../../../data/captured.jpg").convert("RGB")
 except Exception as e:
     raise FileNotFoundError("captured.jpg not found for tracing.") from e
 
@@ -79,7 +81,7 @@ net = torch.jit.trace(model, tracing_input, strict=False)
 net.eval()
 
 
-def capture_image(image_path="../data/captured.jpg"):
+def capture_image(image_path="../../../data/captured.jpg"):
     """
     Simulate capturing an image.
     In practice, integrate your camera capture command here (e.g., using libcamera-still).
@@ -189,7 +191,7 @@ def main_loop():
     try:
         while True:
             capture_image()  # Capture or simulate an image capture
-            process_image("../data/captured.jpg")  # Process the captured image
+            process_image("../../../data/captured.jpg")  # Process the captured image
             # Optionally sleep a few seconds before the next capture:
             # time.sleep(30)
     except KeyboardInterrupt:

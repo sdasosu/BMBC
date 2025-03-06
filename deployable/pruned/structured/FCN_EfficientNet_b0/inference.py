@@ -4,12 +4,11 @@ import time
 from datetime import datetime
 
 import numpy as np
+import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
-import torch_pruning as tp
 import torchvision.transforms as transforms
 from PIL import Image
-from torchvision.models.segmentation import deeplabv3_resnet50
 
 # ----------------- Setting up the device--------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -68,39 +67,43 @@ def load_class_labels(label_path="../../../data/label.json"):
 class_labels = load_class_labels()
 
 
-# -------------------- Load Pruned Model ---------------------------
-def load_pruned_model(
-    model_path="../../../../pruning/pruned_models/pruned_Deeplabv3_resnet_epoch_36_magnitude_pruner_0.50.pth",
-):
-    """Load a pruned DeepLabV3 ResNet model"""
-    # Initialize the original model architecture
-    model = deeplabv3_resnet50(weights=None)
-    model.classifier[-1] = nn.Conv2d(
-        256, len(CLASS_MAPPING) + 1, kernel_size=(1, 1), stride=(1, 1)
+# -------------------- Initialize FPN EfficientNet-B0 Model ---------------------------
+def create_model(num_classes=5):
+    """Create an FPN EfficientNet-B0 model with the same architecture used in training"""
+    # Create the model using segmentation-models-pytorch
+    model = smp.FPN(
+        "efficientnet-b0", encoder_weights=None, classes=num_classes, activation=None
     )
 
+    # Modify the segmentation head to match the training setup
+    model.segmentation_head = nn.Sequential(
+        nn.Conv2d(
+            128, num_classes, kernel_size=1, stride=1
+        ),  # EfficientNet-B0 outputs 128 feature maps
+        nn.Upsample(
+            scale_factor=4, mode="bilinear", align_corners=True
+        ),  # Adjust resolution
+    )
+
+    return model
+
+
+# -------------------- Load Pruned Model ---------------------------
+def load_pruned_model(
+    model_path="../../../models/pruned_models/pruned_FPN_EfficientNet_b0_epoch_36_magnitude_pruner_0.50.model.pth",
+):
+    """Load a pruned FPN EfficientNet-B0 model that was saved as a complete model"""
     try:
-        # Load the state dict
-        loaded_state_dict = torch.load(model_path, map_location=device)
-
-        # Try using torch_pruning to load the state dict (for structured pruning)
-        try:
-            tp.load_state_dict(model, state_dict=loaded_state_dict)
-            print(
-                f"Successfully loaded pruned model using tp.load_state_dict from {model_path}"
-            )
-        except Exception as e:
-            print(f"Error using tp.load_state_dict: {e}")
-            print("Falling back to regular state_dict loading")
-
-            # Try regular loading as fallback
-            model.load_state_dict(loaded_state_dict, strict=False)
-            print(
-                f"Successfully loaded pruned model with regular loading from {model_path}"
-            )
+        # Load the complete model
+        model = torch.load(model_path, map_location=device)
+        print(f"Successfully loaded pruned model from {model_path}")
     except Exception as e:
         print(f"Error loading pruned model: {e}")
-        print("Using randomly initialized model instead")
+        print("Falling back to creating a fresh model")
+
+        # If loading fails, create a fresh model
+        model = create_model(num_classes=len(CLASS_MAPPING) + 1)  # Background + classes
+        print("Using newly initialized model instead")
 
     model = model.to(device)
     model.eval()  # Set model to evaluation mode
@@ -116,7 +119,7 @@ model = load_pruned_model()
 # Define preprocessing transformations for inference
 preprocess = transforms.Compose(
     [
-        transforms.Resize((520, 520)),
+        transforms.Resize((512, 512)),  # Match the training resolution
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
@@ -203,8 +206,7 @@ def process_image(image_path):
 
     # Perform inference
     with torch.no_grad():
-        outputs = model(input_batch)
-        output_tensor = outputs["out"]
+        output_tensor = model(input_batch)
 
         # Process the output tensor to get predicted classes and probabilities
         probabilities = torch.nn.functional.softmax(output_tensor, dim=1)
@@ -309,7 +311,7 @@ def main_loop():
 
 
 if __name__ == "__main__":
-    print(f"Running inference with pruned DeepLabV3 ResNet model on {device}")
+    print(f"Running inference with pruned FPN EfficientNet-B0 model on {device}")
     print(f"Class labels: {class_labels}")
 
     # Start the main image processing loop

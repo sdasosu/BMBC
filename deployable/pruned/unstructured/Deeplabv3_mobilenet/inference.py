@@ -1,26 +1,22 @@
-import time
+import json
 import os
-import warnings
-from PIL import Image
+import time
+from datetime import datetime
+
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
-from datetime import datetime
-import json
-from torchvision.models.segmentation import fcn_resnet50
+from PIL import Image
+from torchvision.models.segmentation import deeplabv3_mobilenet_v3_large
 
-# Suppress TracerWarning from torch.jit in case they occur
-from torch.jit import TracerWarning
-
-warnings.filterwarnings("ignore", category=TracerWarning)
-
-# ----------------- Setting up the device --------------
+# ----------------- Setting up the device--------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ----------------- Create necessary directories if they don't exist --------------
 os.makedirs("results", exist_ok=True)
 os.makedirs(os.path.join("results", "detected_images"), exist_ok=True)
 # -------------------------------------------------------------------------------
+
 
 # ----------------- Class Mapping ---------------------
 CLASS_MAPPING = {
@@ -31,8 +27,9 @@ CLASS_MAPPING = {
 }
 # ---------------------------------------------------
 
+
 # ---------------- Read the class labels from a JSON file ---------------
-with open("../data/label.json", "r") as f:
+with open("../../../data/label.json", "r") as f:
     class_labels_dict = json.load(f)
 # Sorted keys numerically to ensure the correct order
 class_labels = [
@@ -40,35 +37,22 @@ class_labels = [
 ]
 # ------------------------------------------------------------------------
 
-# -------------------- Model ---------------------------
-# Build the FCN model using ResNet-50 backbone
-model = fcn_resnet50(weights=None)
-# Modify the classifier's last conv layer to match the number of classes
-model.classifier[-1] = nn.Conv2d(512, len(CLASS_MAPPING) + 1, kernel_size=1, stride=1)
-model = model.to(device)
 
+# -------------------- Model ---------------------------
+model = deeplabv3_mobilenet_v3_large(weights=None)
+# Update the classifier to match the number of classes
+model.classifier[-1] = nn.Conv2d(
+    256, len(CLASS_MAPPING) + 1, kernel_size=(1, 1), stride=(1, 1)
+)
+model = model.to(device)
 # -------------------- Check point --------------------
-checkpoint_path = "../models/FCN_resnet_epoch_19.pth"
-# Use weights_only=True to limit arbitrary code execution during unpickling if supported
+checkpoint_path = (
+    "../../../models/pruned_models/unstructured/Deeplabv3_mobilenet_epoch_19.pth"
+)
 checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 model.load_state_dict(checkpoint, strict=False)
 model.eval()  # Set model to evaluation mode
-# ----------------------------------------------------------------------------
-
-
-# Wrap the model so that only the output tensor is returned (instead of a dictionary)
-class FCNWrapper(nn.Module):
-    def __init__(self, model):
-        super(FCNWrapper, self).__init__()
-        self.model = model
-
-    def forward(self, x):
-        outputs = self.model(x)
-        if isinstance(outputs, dict):
-            return outputs["out"]
-        else:
-            return outputs
-
+net = torch.jit.script(model)
 
 # Define preprocessing transformations for tracing and inference
 preprocess = transforms.Compose(
@@ -80,28 +64,26 @@ preprocess = transforms.Compose(
     ]
 )
 
+# -----------------------------------------------------
 # Use captured.jpg as sample input for tracing instead of a random tensor
 try:
-    sample_image = Image.open("../data/captured.jpg").convert("RGB")
+    sample_image = Image.open("../../../data/captured.jpg").convert("RGB")
 except Exception as e:
     raise FileNotFoundError("captured.jpg not found for tracing.") from e
 tracing_input = preprocess(sample_image).unsqueeze(0).to(device)
-
-# Trace the wrapped model so that it returns the output tensor directly
-wrapped_model = FCNWrapper(model)
-net = torch.jit.trace(wrapped_model, tracing_input, strict=False)
+net = torch.jit.trace(model, tracing_input, strict=False)
 # -----------------------------------------------------
 
 net.eval()
 
 
-def capture_image(image_path="../data/captured.jpg"):
-    # Simulate capturing an image.
-    # In practice, you can integrate your camera capture command here (e.g., libcamera-still).
+def capture_image(image_path="../../../data/captured.jpg"):
+    # Captures an image using libcamera-still, the command automatically handles opening and closing the camera
+    # os.system(f'libcamera-still -o {image_path}')
     return image_path
 
 
-# Decorator to measure inference time based on CPU and wall-clock time
+# Decorator to measure inference time based on CPU time and wall-clock time
 def measure_inference_time(func):
     def wrapper(*args, **kwargs):
         start_cpu_time = time.process_time()  # Start CPU time measurement
@@ -115,7 +97,7 @@ def measure_inference_time(func):
         cpu_inference_time = end_cpu_time - start_cpu_time
         wall_inference_time = end_wall_time - start_wall_time
 
-        # Get CPU temperature if available
+        # Get CPU temperature
         temp = get_cpu_temperature()
 
         # Create a log entry with timestamp, CPU time, wall time, and temperature information
@@ -126,6 +108,7 @@ def measure_inference_time(func):
             f"Temperature: {temp if temp is not None else 'read failed'}"
         )
 
+        # Write the log entry to a file and print it
         with open("results/inference_and_temperature_log.txt", "a") as file:
             file.write(log_entry + "\n")
         print(log_entry)
@@ -135,7 +118,7 @@ def measure_inference_time(func):
     return wrapper
 
 
-# Updated process_image function with inference time decorator
+# Updated process_image function with the inference time measurement decorator
 @measure_inference_time
 def process_image(image_path):
     # Load and preprocess the image
@@ -145,15 +128,15 @@ def process_image(image_path):
         device
     )  # Create a mini-batch as expected by the model
 
+    # Perform inference
     with torch.no_grad():
-        # The traced model returns the output tensor directly.
-        output_tensor = net(input_batch)
+        outputs = net(input_batch)
+        output_tensor = outputs["out"]
         probabilities = torch.nn.functional.softmax(output_tensor, dim=1)
-        # For segmentation, compute the pixel-wise prediction and take the mode as the final class
         predicted_classes = torch.argmax(probabilities, dim=1)
         predicted_class = predicted_classes.flatten().mode()[0].item()
 
-        # Map predicted index to label (if index within the range of class_labels)
+        # Map predicted index to label
         if predicted_class < len(class_labels):
             predicted_label = class_labels[predicted_class]
         else:
@@ -164,14 +147,15 @@ def process_image(image_path):
         print(f"Predicted class: {predicted_label}")
         print(f"Confidence: {confidence:.4f}")
 
-        if confidence < 0.75:  # Confidence threshold is set arbitrarily
+        if confidence < 0.75:  # Confidence threshold is arbitrarily set
             print("Low confidence. No class detected.")
             return
 
+        # Append predicted label and confidence to a file
         with open("results/predicted_labels_and_confidence.txt", "a") as file:
             file.write(f"{predicted_label}, {confidence:.4f}\n")
 
-        # Save the image if the predicted label matches certain classes
+        # Save the image if label matches certain classes
         if predicted_label in [
             "Others",
             "adult",
@@ -202,10 +186,9 @@ def get_cpu_temperature():
 def main_loop():
     try:
         while True:
-            capture_image()  # Capture an image (or simulate capture)
-            process_image("../data/captured.jpg")  # Process the captured image
-            # Optionally sleep a few seconds before next capture:
-            # time.sleep(30)
+            capture_image()  # Capture an image
+            process_image("../../../data/captured.jpg")  # Process the captured image
+            # time.sleep(30)  # Wait for 30 seconds before next capture
     except KeyboardInterrupt:
         print("Stopped by User")
     except Exception as e:
