@@ -1,9 +1,12 @@
+import io
 import json
 import os
 import time
 import warnings
 from datetime import datetime
 
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
@@ -32,14 +35,42 @@ CLASS_MAPPING = {
 }
 # ---------------------------------------------------
 
+# ----------------- Color Mapping for Visualization ---------------------
+COLOR_MAP = {
+    0: [0, 0, 0],  # Background - Black
+    1: [255, 0, 0],  # Adult - Red
+    2: [0, 255, 0],  # Egg masses - Green
+    3: [0, 0, 255],  # Instar nymph (1-3) - Blue
+    4: [255, 255, 0],  # Instar nymph (4) - Yellow
+}
+# ---------------------------------------------------
+
+
 # ---------------- Read the class labels from a JSON file ---------------
-with open("../../../data/label.json", "r") as f:
-    class_labels_dict = json.load(f)
-# Sorted keys numerically to ensure the correct order
-class_labels = [
-    class_labels_dict[key] for key in sorted(class_labels_dict, key=lambda x: int(x))
-]
-# ------------------------------------------------------------------------
+def load_class_labels(label_path="../../../data/label.json"):
+    try:
+        with open(label_path, "r") as f:
+            class_labels_dict = json.load(f)
+
+        # Sorted keys numerically to ensure the correct order
+        class_labels = [
+            class_labels_dict[key]
+            for key in sorted(class_labels_dict, key=lambda x: int(x))
+        ]
+        return class_labels
+    except Exception as e:
+        print(f"Error loading class labels: {e}")
+        # Fallback class labels if file not found
+        return [
+            "Background",
+            "adult",
+            "egg masses",
+            "instar nymph (1-3)",
+            "instar nymph (4)",
+        ]
+
+
+class_labels = load_class_labels()
 
 # -------------------- Model ---------------------------
 # Build the FCN model using ResNet-50 backbone
@@ -74,8 +105,7 @@ class FCNWrapper(nn.Module):
 # Define preprocessing transformations for tracing and inference
 preprocess = transforms.Compose(
     [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
+        transforms.Resize((520, 520)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
@@ -96,9 +126,36 @@ net = torch.jit.trace(wrapped_model, tracing_input, strict=False)
 net.eval()
 
 
+def mask_to_color(mask):
+    """Convert a class mask to a color image for visualization"""
+    color_mask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
+
+    for class_idx, color in COLOR_MAP.items():
+        color_mask[mask == class_idx] = color
+
+    return color_mask
+
+
 def capture_image(image_path="../../../data/captured.jpg"):
-    # Simulate capturing an image.
-    # In practice, you can integrate your camera capture command here (e.g., libcamera-still).
+    """
+    Captures an image using libcamera-still (on Raspberry Pi)
+    or simulates capturing by using an existing image
+    """
+    # Uncomment the following line on Raspberry Pi to capture an image
+    # os.system(f'libcamera-still -o {image_path}')
+
+    # For testing/development, verify the file exists
+    if not os.path.exists(image_path):
+        print(f"Warning: {image_path} does not exist. Using a test image if available.")
+        test_images = [
+            f
+            for f in os.listdir("../../../data")
+            if f.endswith((".jpg", ".png", ".jpeg"))
+        ]
+        if test_images:
+            image_path = os.path.join("../../../data", test_images[0])
+            print(f"Using test image: {image_path}")
+
     return image_path
 
 
@@ -136,58 +193,161 @@ def measure_inference_time(func):
     return wrapper
 
 
-# Updated process_image function with inference time decorator
 @measure_inference_time
 def process_image(image_path):
     # Load and preprocess the image
     image = Image.open(image_path).convert("RGB")
+    original_image = image.copy()  # Keep a copy of the original image
     input_tensor = preprocess(image)
     input_batch = input_tensor.unsqueeze(0).to(
         device
     )  # Create a mini-batch as expected by the model
 
+    # Perform inference
     with torch.no_grad():
-        # The traced model returns the output tensor directly.
-        output_tensor = net(input_batch)
-        probabilities = torch.nn.functional.softmax(output_tensor, dim=1)
-        # For segmentation, compute the pixel-wise prediction and take the mode as the final class
-        predicted_classes = torch.argmax(probabilities, dim=1)
-        predicted_class = predicted_classes.flatten().mode()[0].item()
-
-        # Map predicted index to label (if index within the range of class_labels)
-        if predicted_class < len(class_labels):
-            predicted_label = class_labels[predicted_class]
+        # Run inference using the traced model
+        outputs = net(input_batch)
+        # Check the output type
+        if isinstance(outputs, dict):
+            output_tensor = outputs["out"]
         else:
-            predicted_label = "Unknown"
+            output_tensor = outputs
 
-        confidence = probabilities.max().item()
+        # Get softmax probabilities
+        probabilities = torch.nn.functional.softmax(output_tensor, dim=1)
 
-        print(f"Predicted class: {predicted_label}")
-        print(f"Confidence: {confidence:.4f}")
+        # Sum the probabilities for each class
+        class_probabilities_sum = probabilities.sum(dim=[2, 3])[0]
 
-        if confidence < 0.75:  # Confidence threshold is set arbitrarily
-            print("Low confidence. No class detected.")
-            return
+        # Ignore background class (channel 0) and focus on foreground classes
+        foreground_probs = class_probabilities_sum[1:]
 
-        with open("results/predicted_labels_and_confidence.txt", "a") as file:
-            file.write(f"{predicted_label}, {confidence:.4f}\n")
+        # Check if there are any foreground classes with non-zero probability
+        if foreground_probs.sum().item() > 0:
+            # Normalize the foreground probabilities
+            foreground_probs = foreground_probs / foreground_probs.sum()
 
-        # Save the image if the predicted label matches certain classes
-        if predicted_label in [
-            "Others",
-            "adult",
-            "egg masses",
-            "instar nymph (1-3)",
-            "instar nymph (4)",
-        ]:
-            save_path = "results/detected_images"
-            os.makedirs(save_path, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            image.save(
-                os.path.join(
-                    save_path, f"{predicted_label}_{confidence:.4f}_{timestamp}.jpg"
+            # Get the class with highest probability among foreground classes
+            # Add 1 to restore original class index (since we ignored background)
+            fg_class_idx = foreground_probs.argmax().item()
+            main_class_idx = fg_class_idx + 1
+            main_class_confidence = foreground_probs[fg_class_idx].item()
+
+            # Set the confidence threshold
+            confidence_threshold = 0.05  # Adjust as needed
+
+            if main_class_confidence < confidence_threshold:
+                predicted_label = "unknown"
+                print(
+                    f"Low confidence detection ({main_class_confidence:.4f}). Marking as unknown."
                 )
+            else:
+                if main_class_idx < len(class_labels):
+                    predicted_label = class_labels[main_class_idx]
+                else:
+                    predicted_label = "unknown"
+
+                print(f"Predicted class: {predicted_label}")
+                print(f"Confidence: {main_class_confidence:.4f}")
+        else:
+            # If no foreground class detected, mark as unknown
+            predicted_label = "unknown"
+            print("No foreground class detected. Marking as unknown.")
+
+        # Generate a predicted mask for visualization
+        predicted_classes = torch.argmax(probabilities, dim=1)
+        predicted_mask = predicted_classes[0].cpu().numpy()
+        color_mask = mask_to_color(predicted_mask)
+
+        # Save the image and mask
+        save_path = "results/detected_images"
+        os.makedirs(save_path, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Save original image
+        original_image.save(
+            os.path.join(
+                save_path,
+                f"{predicted_label}_original_{0 if predicted_label == 'unknown' else main_class_confidence:.4f}_{timestamp}.png",
             )
+        )
+
+        # Save the mask
+        mask_image = Image.fromarray(color_mask)
+        mask_image.save(
+            os.path.join(
+                save_path,
+                f"{predicted_label}_mask_{0 if predicted_label == 'unknown' else main_class_confidence:.4f}_{timestamp}.png",
+            )
+        )
+
+        # Only record when the prediction is not background or low confidence
+        if predicted_label not in ["background", "unknown"]:
+            with open("results/predicted_labels_and_confidence.txt", "a") as file:
+                file.write(f"{predicted_label}, {main_class_confidence:.4f}\n")
+
+        # Create visualization
+        comparison_image = create_visualization(
+            input_tensor.cpu(),
+            mask_image,
+            predicted_label,
+            main_class_confidence,
+        )
+
+        # Save the comparison image
+        comparison_image.save(
+            os.path.join(
+                save_path,
+                f"{predicted_label}_comparison_{0 if predicted_label == 'unknown' else main_class_confidence:.4f}_{timestamp}.png",
+            )
+        )
+
+
+def create_visualization(preprocessed_tensor, mask_image, predicted_label, confidence):
+    """Create a visualization of the preprocessed image and mask"""
+    # Inverse normalization - Convert pixel values back to [0,1] range
+    mean = torch.tensor([0.485, 0.456, 0.406])
+    std = torch.tensor([0.229, 0.224, 0.225])
+
+    # Clone the tensor to avoid modifying the original data
+    display_tensor = preprocessed_tensor.clone()
+
+    # Inverse normalization - Convert pixel values back to [0,1] range
+    for t, m, s in zip(display_tensor, mean, std):
+        t.mul_(s).add_(m)
+
+    # Convert the tensor to a numpy array for display
+    display_image = display_tensor.permute(1, 2, 0).numpy()
+    display_image = np.clip(display_image, 0, 1)
+
+    # Convert the mask to a numpy array
+    mask_image_np = np.array(mask_image)
+
+    # Create an image canvas
+    plt.figure(figsize=(12, 6))
+
+    # Left: Processed image
+    plt.subplot(1, 2, 1)
+    plt.imshow(display_image)
+    plt.title("Processed Image")
+    plt.axis("off")
+
+    # Right: Prediction mask
+    plt.subplot(1, 2, 2)
+    plt.imshow(mask_image_np)
+    plt.title(f"Prediction: {predicted_label}\nConfidence: {confidence:.4f}")
+    plt.axis("off")
+
+    # Save as an image object in memory
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.1)
+    plt.close()
+    buf.seek(0)
+
+    # Convert to a PIL image
+    comparison_img = Image.open(buf)
+    comparison_img = comparison_img.convert("RGB")
+    return comparison_img
 
 
 def get_cpu_temperature():
@@ -202,13 +362,25 @@ def get_cpu_temperature():
 
 def main_loop():
     try:
+        last_modified_time = 0
+        image_path = "../../../data/captured.jpg"
+
         while True:
-            capture_image()  # Capture an image (or simulate capture)
-            process_image("../../../data/captured.jpg")  # Process the captured image
-            # Optionally sleep a few seconds before next capture:
-            # time.sleep(30)
+            captured_path = capture_image()  # Capture or use existing image
+
+            # Check if the image has been modified
+            current_modified_time = os.path.getmtime(image_path)
+
+            if current_modified_time > last_modified_time:
+                print(
+                    f"New image detected at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                process_image(captured_path)  # Process the captured image
+                last_modified_time = current_modified_time
+
+            time.sleep(0.2)  # Check for new image every 200ms
     except KeyboardInterrupt:
-        print("Stopped by User")
+        print("\nStopped by User")
     except Exception as e:
         print(f"An error occurred: {e}")
 

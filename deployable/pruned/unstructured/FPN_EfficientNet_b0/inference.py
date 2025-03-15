@@ -2,18 +2,23 @@ import io
 import json
 import os
 import time
+import warnings
 from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
+import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
-import torch_pruning as tp
 import torchvision.transforms as transforms
 from PIL import Image
-from torchvision.models.segmentation import deeplabv3_mobilenet_v3_large
 
-# ----------------- Setting up the device--------------
+# Suppress TracerWarning from torch.jit from segmentation_models_pytorch
+from torch.jit import TracerWarning
+
+warnings.filterwarnings("ignore", category=TracerWarning)
+
+# ----------------- Setting up the device --------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ----------------- Create necessary directories if they don't exist --------------
@@ -65,64 +70,83 @@ def load_class_labels(label_path="../../../data/label.json"):
         ]
 
 
-# ------------------------------------------------------------------------
-
 class_labels = load_class_labels()
 
-
-# -------------------- Load Pruned Model ---------------------------
-def load_pruned_model(
-    model_path="../../../models/pruned_models/pruned_Deeplabv3_mobilenet_epoch_29_magnitude_pruner_0.50.pth",
-):
-    """Load a pruned DeepLabV3 MobileNet model"""
-    # Initialize the original model architecture
-    model = deeplabv3_mobilenet_v3_large(weights=None)
-    model.classifier[-1] = nn.Conv2d(
-        256, len(CLASS_MAPPING) + 1, kernel_size=(1, 1), stride=(1, 1)
-    )
-
-    try:
-        # Load the state dict
-        loaded_state_dict = torch.load(model_path, map_location=device)
-
-        # Try using torch_pruning to load the state dict (for structured pruning)
-        try:
-            tp.load_state_dict(model, state_dict=loaded_state_dict)
-            print(
-                f"Successfully loaded pruned model using tp.load_state_dict from {model_path}"
-            )
-        except Exception as e:
-            print(f"Error using tp.load_state_dict: {e}")
-            print("Falling back to regular state_dict loading")
-
-            # Try regular loading as fallback
-            model.load_state_dict(loaded_state_dict, strict=False)
-            print(
-                f"Successfully loaded pruned model with regular loading from {model_path}"
-            )
-    except Exception as e:
-        print(f"Error loading pruned model: {e}")
-        print("Using randomly initialized model instead")
-
-    model = model.to(device)
-    model.eval()  # Set model to evaluation mode
-
-    return model
+# -------------------- Model ---------------------------
+# Build the FPN model with EfficientNet-B0 encoder (acting as FCN)
+model = smp.FPN(
+    encoder_name="efficientnet-b0",
+    encoder_weights="imagenet",
+    classes=5,  # 4 target classes + background
+    activation=None,
+)
+# Redefine the segmentation head to align with EfficientNet-B0 output channels
+model.segmentation_head = nn.Sequential(
+    nn.Conv2d(
+        128, 5, kernel_size=1, stride=1
+    ),  # EfficientNet-B0 outputs 128 feature maps
+    nn.Upsample(
+        scale_factor=4, mode="bilinear", align_corners=True
+    ),  # Adjust resolution
+)
+model = model.to(device)
+# -------------------- Check point --------------------
+checkpoint_path = (
+    "../../../models/pruned_models/unstructured/FPN_EfficientNet_b0_epoch_36.pth"
+)
+# Use weights_only=True to limit arbitrary code execution during unpickling
+checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+model.load_state_dict(checkpoint, strict=False)
+model.eval()  # Set model to evaluation mode
+# ----------------------------------------------------------------------------
 
 
-# ----------------------------------------------------------------
+# Wrap the model so that only the output tensor is returned (instead of a dictionary)
+class FPNWrapper(nn.Module):
+    def __init__(self, model):
+        super(FPNWrapper, self).__init__()
+        self.model = model
 
-# Load pruned model
-model = load_pruned_model()
+    def forward(self, x):
+        outputs = self.model(x)
+        if isinstance(outputs, dict):
+            return outputs["out"]
+        else:
+            return outputs
 
-# Define preprocessing transformations for inference
+
+# Define preprocessing transformations for tracing and inference
 preprocess = transforms.Compose(
     [
-        transforms.Resize((520, 520)),
+        transforms.Resize((512, 512)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 )
+
+# Use captured.jpg as sample input for tracing instead of a random tensor
+try:
+    sample_image = Image.open("../../../data/captured.jpg").convert("RGB")
+except Exception as e:
+    raise FileNotFoundError("captured.jpg not found for tracing.") from e
+tracing_input = preprocess(sample_image).unsqueeze(0).to(device)
+
+# Trace the wrapped model instead
+wrapped_model = FPNWrapper(model)
+net = torch.jit.trace(wrapped_model, tracing_input, strict=False)
+# -----------------------------------------------------
+
+net.eval()
+
+
+def mask_to_color(mask):
+    """Convert a class mask to a color image for visualization"""
+    color_mask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
+
+    for class_idx, color in COLOR_MAP.items():
+        color_mask[mask == class_idx] = color
+
+    return color_mask
 
 
 def capture_image(image_path="../../../data/captured.jpg"):
@@ -148,17 +172,7 @@ def capture_image(image_path="../../../data/captured.jpg"):
     return image_path
 
 
-def mask_to_color(mask):
-    """Convert a class mask to a color image for visualization"""
-    color_mask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
-
-    for class_idx, color in COLOR_MAP.items():
-        color_mask[mask == class_idx] = color
-
-    return color_mask
-
-
-# Decorator to measure inference time
+# Decorator to measure inference time based on CPU and wall-clock time
 def measure_inference_time(func):
     def wrapper(*args, **kwargs):
         start_cpu_time = time.process_time()  # Start CPU time measurement
@@ -172,7 +186,7 @@ def measure_inference_time(func):
         cpu_inference_time = end_cpu_time - start_cpu_time
         wall_inference_time = end_wall_time - start_wall_time
 
-        # Get CPU temperature
+        # Get CPU temperature if available
         temp = get_cpu_temperature()
 
         # Create a log entry with timestamp, CPU time, wall time, and temperature information
@@ -195,18 +209,15 @@ def measure_inference_time(func):
 
 @measure_inference_time
 def process_image(image_path):
-    """Process an image and run inference with the pruned model"""
     # Load and preprocess the image
     image = Image.open(image_path).convert("RGB")
     original_image = image.copy()  # Keep a copy of the original image
-
     input_tensor = preprocess(image)
     input_batch = input_tensor.unsqueeze(0).to(device)
 
-    # Perform inference
     with torch.no_grad():
-        outputs = model(input_batch)
-        output_tensor = outputs["out"]
+        # Run inference using the traced model
+        output_tensor = net(input_batch)
 
         # Get softmax probabilities
         probabilities = torch.nn.functional.softmax(output_tensor, dim=1)
@@ -259,7 +270,7 @@ def process_image(image_path):
         os.makedirs(save_path, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Save the original image
+        # Save original image
         original_image.save(
             os.path.join(
                 save_path,
@@ -276,7 +287,7 @@ def process_image(image_path):
             )
         )
 
-        # Only record when the prediction is not background or unknown
+        # Only record when the prediction is not background or low confidence
         if predicted_label not in ["background", "unknown"]:
             with open("results/predicted_labels_and_confidence.txt", "a") as file:
                 file.write(f"{predicted_label}, {main_class_confidence:.4f}\n")
@@ -346,28 +357,16 @@ def create_visualization(preprocessed_tensor, mask_image, predicted_label, confi
 
 
 def get_cpu_temperature():
-    """Get CPU temperature (works on Raspberry Pi)"""
     try:
         temp_str = os.popen("vcgencmd measure_temp").readline()
         temp = float(temp_str.replace("temp=", "").replace("'C\n", ""))
         return temp
     except Exception as e:
-        # This might fail on non-Raspberry Pi systems
-        try:
-            # Try an alternative method for Linux systems
-            if os.path.exists("/sys/class/thermal/thermal_zone0/temp"):
-                with open("/sys/class/thermal/thermal_zone0/temp") as f:
-                    temp = float(f.read()) / 1000.0
-                return temp
-        except Exception:
-            pass
-
         print(f"Could not get temperature: {e}")
         return None
 
 
 def main_loop():
-    """Main inference loop"""
     try:
         last_modified_time = 0
         image_path = "../../../data/captured.jpg"
@@ -386,7 +385,6 @@ def main_loop():
                 last_modified_time = current_modified_time
 
             time.sleep(0.2)  # Check for new image every 200ms
-
     except KeyboardInterrupt:
         print("\nStopped by User")
     except Exception as e:
@@ -394,5 +392,5 @@ def main_loop():
 
 
 if __name__ == "__main__":
-    # Start the main image processing loop
+    # Start the main image capture and processing loop
     main_loop()

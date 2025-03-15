@@ -1,8 +1,10 @@
+import io
 import json
 import os
 import time
 from datetime import datetime
 
+import matplotlib.pyplot as plt
 import numpy as np
 import segmentation_models_pytorch as smp
 import torch
@@ -208,67 +210,141 @@ def process_image(image_path):
     with torch.no_grad():
         output_tensor = model(input_batch)
 
-        # Process the output tensor to get predicted classes and probabilities
+        # Get softmax probabilities
         probabilities = torch.nn.functional.softmax(output_tensor, dim=1)
+
+        # Sum the probabilities for each class
+        class_probabilities_sum = probabilities.sum(dim=[2, 3])[0]
+
+        # Ignore background class (channel 0) and focus on foreground classes
+        foreground_probs = class_probabilities_sum[1:]
+
+        # Check if there are any foreground classes with non-zero probability
+        if foreground_probs.sum().item() > 0:
+            # Normalize the foreground probabilities
+            foreground_probs = foreground_probs / foreground_probs.sum()
+
+            # Get the class with highest probability among foreground classes
+            # Add 1 to restore original class index (since we ignored background)
+            fg_class_idx = foreground_probs.argmax().item()
+            main_class_idx = fg_class_idx + 1
+            main_class_confidence = foreground_probs[fg_class_idx].item()
+
+            # Set the confidence threshold
+            confidence_threshold = 0.05  # Adjust as needed
+
+            if main_class_confidence < confidence_threshold:
+                predicted_label = "unknown"
+                print(
+                    f"Low confidence detection ({main_class_confidence:.4f}). Marking as unknown."
+                )
+            else:
+                if main_class_idx < len(class_labels):
+                    predicted_label = class_labels[main_class_idx]
+                else:
+                    predicted_label = "unknown"
+
+                print(f"Predicted class: {predicted_label}")
+                print(f"Confidence: {main_class_confidence:.4f}")
+        else:
+            # If no foreground class detected, mark as unknown
+            predicted_label = "unknown"
+            print("No foreground class detected. Marking as unknown.")
+
+        # Generate a predicted mask for visualization
         predicted_classes = torch.argmax(probabilities, dim=1)
-
-        # Extract the predicted mask
         predicted_mask = predicted_classes[0].cpu().numpy()
-
-        # Convert mask to RGB for visualization
         color_mask = mask_to_color(predicted_mask)
 
-        # Find the most common class (excluding background class 0)
-        classes, counts = np.unique(predicted_mask, return_counts=True)
-        non_bg_classes = classes[classes > 0]
+        # Save the image and mask
+        save_path = "results/detected_images"
+        os.makedirs(save_path, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        if len(non_bg_classes) > 0:
-            non_bg_counts = counts[classes > 0]
-            main_class_idx = non_bg_classes[np.argmax(non_bg_counts)]
-            main_class_confidence = float(np.max(non_bg_counts)) / float(
-                predicted_mask.size
+        # Save the original image
+        original_image.save(
+            os.path.join(
+                save_path,
+                f"{predicted_label}_original_{0 if predicted_label == 'unknown' else main_class_confidence:.4f}_{timestamp}.png",
             )
+        )
 
-            # Map predicted index to label
-            if main_class_idx < len(class_labels):
-                predicted_label = class_labels[main_class_idx]
-            else:
-                predicted_label = "Unknown"
+        # Save the mask
+        mask_image = Image.fromarray(color_mask)
+        mask_image.save(
+            os.path.join(
+                save_path,
+                f"{predicted_label}_mask_{0 if predicted_label == 'unknown' else main_class_confidence:.4f}_{timestamp}.png",
+            )
+        )
 
-            print(f"Predicted class: {predicted_label}")
-            print(f"Confidence: {main_class_confidence:.4f}")
+        # Only record when the prediction is not background or unknown
+        if predicted_label not in ["background", "unknown"]:
+            with open("results/predicted_labels_and_confidence.txt", "a") as file:
+                file.write(f"{predicted_label}, {main_class_confidence:.4f}\n")
 
-            # Save results if confidence is high enough
-            if main_class_confidence > 0.05:  # Lower threshold for pruned model
-                # Append predicted label and confidence to a file
-                with open("results/predicted_labels_and_confidence.txt", "a") as file:
-                    file.write(f"{predicted_label}, {main_class_confidence:.4f}\n")
+        # Create visualization
+        comparison_image = create_visualization(
+            input_tensor.cpu(),
+            mask_image,
+            predicted_label,
+            main_class_confidence,
+        )
 
-                # Save the image with its mask
-                save_path = "results/detected_images"
-                os.makedirs(save_path, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Save the comparison image
+        comparison_image.save(
+            os.path.join(
+                save_path,
+                f"{predicted_label}_comparison_{0 if predicted_label == 'unknown' else main_class_confidence:.4f}_{timestamp}.png",
+            )
+        )
 
-                # Save original image
-                original_image.save(
-                    os.path.join(
-                        save_path,
-                        f"{predicted_label}_original_{main_class_confidence:.4f}_{timestamp}.jpg",
-                    )
-                )
 
-                # Save mask as image
-                mask_image = Image.fromarray(color_mask)
-                mask_image.save(
-                    os.path.join(
-                        save_path,
-                        f"{predicted_label}_mask_{main_class_confidence:.4f}_{timestamp}.png",
-                    )
-                )
-            else:
-                print("Low confidence. Consider as background.")
-        else:
-            print("No foreground class detected.")
+def create_visualization(preprocessed_tensor, mask_image, predicted_label, confidence):
+    """Create a visualization of the preprocessed image and mask"""
+    # Inverse normalization - Convert pixel values back to [0,1] range
+    mean = torch.tensor([0.485, 0.456, 0.406])
+    std = torch.tensor([0.229, 0.224, 0.225])
+
+    # Clone the tensor to avoid modifying the original data
+    display_tensor = preprocessed_tensor.clone()
+
+    # Inverse normalization - Convert pixel values back to [0,1] range
+    for t, m, s in zip(display_tensor, mean, std):
+        t.mul_(s).add_(m)
+
+    # Convert the tensor to a numpy array for display
+    display_image = display_tensor.permute(1, 2, 0).numpy()
+    display_image = np.clip(display_image, 0, 1)
+
+    # Convert the mask to a numpy array
+    mask_image_np = np.array(mask_image)
+
+    # Create an image canvas
+    plt.figure(figsize=(12, 6))
+
+    # Left: Processed image
+    plt.subplot(1, 2, 1)
+    plt.imshow(display_image)
+    plt.title("Processed Image")
+    plt.axis("off")
+
+    # Right: Prediction mask
+    plt.subplot(1, 2, 2)
+    plt.imshow(mask_image_np)
+    plt.title(f"Prediction: {predicted_label}\nConfidence: {confidence:.4f}")
+    plt.axis("off")
+
+    # Save as an image object in memory
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.1)
+    plt.close()
+    buf.seek(0)
+
+    # Convert to a PIL image
+    comparison_img = Image.open(buf)
+    comparison_img = comparison_img.convert("RGB")
+    return comparison_img
 
 
 def get_cpu_temperature():
@@ -295,24 +371,30 @@ def get_cpu_temperature():
 def main_loop():
     """Main inference loop"""
     try:
+        last_modified_time = 0
+        image_path = "../../../data/captured.jpg"
+
         while True:
             captured_path = capture_image()  # Capture or use existing image
-            process_image(captured_path)  # Process the image
 
-            # Wait for user input to continue or exit
-            user_input = input("Press Enter to continue or 'q' to quit: ")
-            if user_input.lower() == "q":
-                break
+            # Check if the image has been modified
+            current_modified_time = os.path.getmtime(image_path)
+
+            if current_modified_time > last_modified_time:
+                print(
+                    f"New image detected at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                process_image(captured_path)  # Process the captured image
+                last_modified_time = current_modified_time
+
+            time.sleep(0.2)  # Check for new image every 200ms
 
     except KeyboardInterrupt:
-        print("Stopped by User")
+        print("\nStopped by User")
     except Exception as e:
         print(f"An error occurred: {e}")
 
 
 if __name__ == "__main__":
-    print(f"Running inference with pruned FPN EfficientNet-B0 model on {device}")
-    print(f"Class labels: {class_labels}")
-
     # Start the main image processing loop
     main_loop()
