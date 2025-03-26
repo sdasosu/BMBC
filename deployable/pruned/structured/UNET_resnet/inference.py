@@ -73,7 +73,7 @@ def create_model(num_classes=5):
     """Create a UNET ResNet model with the same architecture used in training"""
     # Create the model using segmentation-models-pytorch
     model = smp.Unet(
-        encoder_name="resnet18",  # Use ResNet 18 as in the training script
+        encoder_name="resnet34",  # Use ResNet 34 as in the training script
         encoder_weights="imagenet",
         in_channels=3,
         classes=num_classes,
@@ -85,7 +85,7 @@ def create_model(num_classes=5):
 
 # -------------------- Load Pruned Model ---------------------------
 def load_pruned_model(
-    model_path="../../../models/pruned_models/pruned_UNET_resnet18_epoch_36_magnitude_pruner_0.50.model.pth",
+    model_path="../../../models/pruned_models/structured/pruned_UNET_resnet_epoch_20_magnitude_pruner_0.50.model.pth",
 ):
     """Load a pruned UNET ResNet model that was saved as a complete model"""
     try:

@@ -72,7 +72,7 @@ class_labels = load_class_labels()
 
 # -------------------- Load Pruned Model ---------------------------
 def load_pruned_model(
-    model_path="../../../models/pruned_models/pruned_Deeplabv3_resnet_epoch_36_magnitude_pruner_0.50.pth",
+    model_path="../../../models/pruned_models/structured/pruned_Deeplabv3_resnet_epoch_36_magnitude_pruner_0.50.pth",
 ):
     """Load a pruned DeepLabV3 ResNet model"""
     # Initialize the original model architecture

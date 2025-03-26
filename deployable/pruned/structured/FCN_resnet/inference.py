@@ -72,7 +72,7 @@ class_labels = load_class_labels()
 
 # -------------------- Load Pruned Model ---------------------------
 def load_pruned_model(
-    model_path="../../../models/pruned_models/pruned_FCN_resnet_epoch_19_magnitude_pruner_0.50.pth",
+    model_path="../../../models/pruned_models/structured/pruned_FCN_resnet_epoch_19_magnitude_pruner_0.50.pth",
 ):
     """Load a pruned FCN ResNet model"""
     # Initialize the original model architecture

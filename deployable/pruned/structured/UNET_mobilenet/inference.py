@@ -85,7 +85,7 @@ def create_model(num_classes=5):
 
 # -------------------- Load Pruned Model ---------------------------
 def load_pruned_model(
-    model_path="../../../models/pruned_models/pruned_UNET_mobilenetv3_epoch_36_magnitude_pruner_0.50.model.pth",
+    model_path="../../../models/pruned_models/structured/pruned_UNET_mobilenet_epoch_37_magnitude_pruner_0.50.model.pth",
 ):
     """Load a pruned UNET MobileNetV3 model that was saved as a complete model"""
     try:
