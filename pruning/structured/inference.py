@@ -16,7 +16,6 @@ from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
 import segmentation_models_pytorch as smp
 from torchvision.models.segmentation import (
     deeplabv3_mobilenet_v3_large,
@@ -416,9 +415,9 @@ class ModelEvaluator:
                 traceback.print_exc()
                 continue
 
-        # Save all results and generate visualization
+        # Save all results to CSV
         self._save_all_results()
-        self._generate_visualization()
+        print("\nEvaluation completed. Run visualization script to generate plots.")
 
     def _get_sorted_pruned_models(self) -> List[Tuple[str, float]]:
         """Get pruned models sorted by pruning ratio, including both .pth and .model.pth files"""
@@ -504,191 +503,6 @@ class ModelEvaluator:
         output_file = "evaluation_results_all_models.csv"
         df.to_csv(output_file, index=False)
         print(f"\nAll evaluation results saved to {output_file}")
-
-    def _generate_visualization(self) -> None:
-        """Generate visualization of evaluation metrics vs pruning ratio"""
-        if not self.results_data:
-            return
-
-        # Create a visualization directory
-        vis_dir = "visualization_results"
-        os.makedirs(vis_dir, exist_ok=True)
-
-        df = pd.DataFrame(self.results_data)
-
-        # Extract model types from model names
-        df["model_type"] = df["model_name"].apply(self.get_model_type_from_path)
-
-        # Get class names
-        class_names = ["background"] + list(CLASS_MAPPING.keys())
-
-        # Create figure for mean IoU and per-class IoU
-        plt.figure(figsize=(15, 6))
-
-        # Plot mean IoU vs pruning ratio grouped by model type
-        plt.subplot(1, 2, 1)
-        sns.lineplot(
-            data=df, x="pruning_ratio", y="mean_iou", hue="model_type", marker="o"
-        )
-        plt.title("Mean IoU vs Pruning Ratio")
-        plt.xlabel("Pruning Ratio")
-        plt.ylabel("Mean IoU")
-        plt.grid(True)
-        plt.legend(title="Model Type")
-
-        # Plot per-class IoU vs pruning ratio
-        plt.subplot(1, 2, 2)
-        for class_name in class_names:
-            sns.lineplot(
-                data=df,
-                x="pruning_ratio",
-                y=f"iou_{class_name}",
-                label=class_name,
-                marker="o",
-            )
-        plt.title("Per-class IoU vs Pruning Ratio")
-        plt.xlabel("Pruning Ratio")
-        plt.ylabel("IoU")
-        plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
-        plt.grid(True)
-
-        # Save first plot
-        plt.tight_layout()
-        plt.savefig(
-            os.path.join(vis_dir, "pruning_evaluation_curves.png"),
-            bbox_inches="tight",
-            dpi=300,
-        )
-        plt.close()
-
-        # Create a new figure for model comparison
-        plt.figure(figsize=(15, 8))
-
-        # Create 2x1 subplots for IoU and Accuracy
-        plt.subplot(1, 2, 1)
-        # Group by model type and pruning ratio to calculate average performance
-        model_comparison = (
-            df.groupby(["model_type", "pruning_ratio"])["mean_iou"].mean().reset_index()
-        )
-
-        # Plot model comparison - IoU
-        sns.lineplot(
-            data=model_comparison,
-            x="pruning_ratio",
-            y="mean_iou",
-            hue="model_type",
-            marker="o",
-            linewidth=2.5,
-        )
-        plt.title("Model Comparison: Mean IoU", fontsize=14)
-        plt.xlabel("Pruning Ratio", fontsize=12)
-        plt.ylabel("Mean IoU", fontsize=12)
-        plt.grid(True)
-        plt.legend(title="Model Type", fontsize=10, title_fontsize=10)
-
-        # Calculate mean accuracy for each model type and pruning ratio
-        plt.subplot(1, 2, 2)
-
-        # Calculate mean accuracy for each model
-        df["mean_acc"] = df[[f"acc_{c}" for c in class_names]].mean(axis=1)
-        model_acc_comparison = (
-            df.groupby(["model_type", "pruning_ratio"])["mean_acc"].mean().reset_index()
-        )
-
-        # Plot model comparison - Accuracy
-        sns.lineplot(
-            data=model_acc_comparison,
-            x="pruning_ratio",
-            y="mean_acc",
-            hue="model_type",
-            marker="o",
-            linewidth=2.5,
-        )
-        plt.title("Model Comparison: Mean Accuracy", fontsize=14)
-        plt.xlabel("Pruning Ratio", fontsize=12)
-        plt.ylabel("Mean Accuracy", fontsize=12)
-        plt.grid(True)
-        plt.legend(title="Model Type", fontsize=10, title_fontsize=10)
-
-        # Save model comparison plot
-        plt.tight_layout()
-        plt.savefig(
-            os.path.join(vis_dir, "model_comparison_curves.png"),
-            bbox_inches="tight",
-            dpi=300,
-        )
-        plt.close()
-
-        # Create separate plots for each model type showing per-class IoU
-        unique_model_types = df["model_type"].unique()
-        num_model_types = len(unique_model_types)
-
-        if num_model_types > 0:
-            # Determine grid layout
-            if num_model_types <= 2:
-                nrows, ncols = 1, num_model_types
-            else:
-                nrows = (num_model_types + 1) // 2
-                ncols = 2
-
-            # Handle special case: when there's only one model type
-            if num_model_types == 1:
-                fig, ax = plt.subplots(figsize=(10, 5))
-                axes = [ax]  # Create a list with the single axis
-            else:
-                fig, axes_array = plt.subplots(
-                    nrows=nrows, ncols=ncols, figsize=(15, 5 * nrows)
-                )
-                # Create a list from the axes array
-                if nrows == 1 and ncols > 1:
-                    axes = list(axes_array)
-                elif nrows > 1 and ncols > 1:
-                    axes = [ax for row in axes_array for ax in row]
-                else:
-                    axes = [axes_array]
-
-            # Plot per-class IoU for each model type
-            for i, model_type in enumerate(unique_model_types):
-                model_df = df[df["model_type"] == model_type]
-
-                for class_name in class_names:
-                    sns.lineplot(
-                        data=model_df,
-                        x="pruning_ratio",
-                        y=f"iou_{class_name}",
-                        label=class_name,
-                        marker="o",
-                        ax=axes[i],
-                    )
-
-                axes[i].set_title(f"{model_type}: Per-class IoU vs Pruning Ratio")
-                axes[i].set_xlabel("Pruning Ratio")
-                axes[i].set_ylabel("IoU")
-                axes[i].grid(True)
-                axes[i].legend(loc="upper right")
-
-            # Hide any unused subplots (only needed when num_model_types > 1)
-            if num_model_types > 1:
-                for j in range(i + 1, len(axes)):
-                    axes[j].set_visible(False)
-
-            # Save per-model plots
-            plt.tight_layout()
-            plt.savefig(
-                os.path.join(vis_dir, "per_model_class_iou.png"),
-                bbox_inches="tight",
-                dpi=300,
-            )
-            plt.close()
-
-            print(f"\nVisualization results saved to {vis_dir}/ directory:")
-            print(f"- Basic evaluation curves: {vis_dir}/pruning_evaluation_curves.png")
-            print(f"- Model comparison curves: {vis_dir}/model_comparison_curves.png")
-            print(f"- Per-model class IoU curves: {vis_dir}/per_model_class_iou.png")
-        else:
-            print(f"\nVisualization results saved to {vis_dir}/ directory:")
-            print(f"- Basic evaluation curves: {vis_dir}/pruning_evaluation_curves.png")
-            print(f"- Model comparison curves: {vis_dir}/model_comparison_curves.png")
 
     def _get_transform_for_model_type(self, model_type: str):
         """Get appropriate transform based on model type"""
